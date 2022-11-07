@@ -1,0 +1,237 @@
+---
+title: "DATA 621 - Homework 3"
+author: "Peter"
+output: 
+  html_document:
+    theme: cerulean
+    highlight: pygments
+    css: ./lab.css
+    toc: true
+    toc_float: true
+  pdf_document:
+    extra_dependencies: ["geometry", "multicol", "multirow", "xcolor"]
+---
+# Overview 
+
+In this homework assignment, you will explore, analyze and model a data set containing information on crime
+for various neighborhoods of a major city. Each record has a response variable indicating whether or not the crime
+rate is above the median crime rate (1) or not (0).
+Your objective is to build a binary logistic regression model on the training data set to predict whether the
+neighborhood will be at risk for high crime levels. You will provide classifications and probabilities for the
+evaluation data set using your binary logistic regression model. You can only use the variables given to you (or
+variables that you derive from the variables provided). Below is a short description of the variables of interest in
+the data set:
+
+ zn: proportion of residential land zoned for large lots (over 25000 square feet) (predictor variable)
+
+ indus: proportion of non-retail business acres per suburb (predictor variable)
+
+ chas: a dummy var. for whether the suburb borders the Charles River (1) or not (0) (predictor variable)
+
+ nox: nitrogen oxides concentration (parts per 10 million) (predictor variable)
+
+ rm: average number of rooms per dwelling (predictor variable)
+
+ age: proportion of owner-occupied units built prior to 1940 (predictor variable)
+
+ dis: weighted mean of distances to five Boston employment centers (predictor variable)
+
+ rad: index of accessibility to radial highways (predictor variable)
+
+ tax: full-value property-tax rate per $10,000 (predictor variable)
+
+ ptratio: pupil-teacher ratio by town (predictor variable)
+
+ black: 1000(Bk - 0.63)2 where Bk is the proportion of blacks by town (predictor variable)
+
+ lstat: lower status of the population (percent) (predictor variable)
+
+ medv: median value of owner-occupied homes in $1000s (predictor variable)
+
+ target: whether the crime rate is above the median crime rate (1) or not (0) (response variable)
+
+# Deliverables
+
+ A write-up submitted in PDF format. Your write-up should have four sections. Each one is described
+below. You may assume you are addressing me as a fellow data scientist, so do not need to shy away
+from technical details.
+
+ Assigned prediction (probabilities, classifications) for the evaluation data set. Use 0.5 threshold.
+
+ Include your R statistical programming code in an Appendix.
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(warning = F, 
+                      message = F,
+                      echo = F,
+                      fig.align = "center")
+```
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+# Required libraries
+
+library(tidyverse)
+library(psych)
+library(corrplot)
+library(RColorBrewer)
+library(knitr)
+library(MASS)
+library(caret)
+library(kableExtra)
+library(ResourceSelection)
+library(pROC)
+```
+
+```{r}
+vn <- c("zn", "indus", "chas", "nox", "rm", "age", "dis", "rad", "tax", "ptratio", "lstat", "medv", "target")
+dscrptn <- c("proportion of residential land zoned for large lots (over 25000 square feet)", "proportion of non-retail business acres per suburb", "a dummy var. for whether the suburb borders the Charles River (1) or not (0)", "nitrogen oxides concentration (parts per 10 million)", "average number of rooms per dwelling", "proportion of owner-occupied units built prior to 1940", "weighted mean of distances to five Boston employment centers", "index of accessibility to radial highways", "full-value property-tax rate per $10,000", "pupil-teacher ratio by town","lower status of the population (percent)", "median value of owner-occupied homes in $1000s", "whether the crime rate is above the median crime rate (1) or not (0)")
+
+kable(cbind(vn, dscrptn), col.names = c("Variable Name", "Short Description")) %>% 
+  kable_styling(full_width = T)
+```
+
+# Data exploration
+
+```{r }
+#Uploaded the datasets on my github account and reading it here
+
+crime_training <- read.csv("https://raw.githubusercontent.com/petferns/DATA621/main/crime-training-data_modified.csv")
+crime_testing <- read.csv("https://raw.githubusercontent.com/petferns/DATA621/main/crime-evaluation-data_modified.csv")
+```
+
+In our dataset we have 466 observations and 13 variables. Each observation represents a crime occurred in the  neighborhoods of a major city.
+Response variable `target` is a binary determinant with 1 representing an above average crime and 0 as below average crime.
+There are no missing values in our dataset
+
+```{r}
+crime_training %>% 
+  mutate(chas = as.factor(chas), 
+         target = as.factor(target)) %>% 
+  glimpse() %>% 
+  describe()
+```
+# Data Visualization
+
+From the histograms below we see that most of the distributions are skewed and `medv` and `rm` being almost normally distributed.
+`age`, `ptratio` are left skewed whereas `dis`, `lstat` and `zn` are right skewed. We also see bi=modal distribution in `indus`,`rad` and `tax`
+
+```{r}
+crime_training %>%
+  gather(key, value, -c(target, chas)) %>%
+  ggplot(aes(value)) +
+  geom_histogram(binwidth = function(x) 2 * IQR(x) / (length(x)^(1/3)), fill="#8d4c4ca8") +
+  facet_wrap(~ key, scales = 'free', ncol = 3) +
+  theme_minimal()
+```
+We see in the below box plot graph the presence of outliers in many of the variables. We see high interquartile range for variables `rad` and `tax`. The variance between two values of the response variable differs for `age`,`dis`, `nox`, `rad`, `tax`, `zn` so we will have to consider adding quadratic terms for them.
+
+```{r}
+crime_training %>%
+  dplyr::select(-chas) %>% 
+  gather(key, value, -target) %>% 
+  mutate(key = factor(key),
+         target = factor(target)) %>% 
+  ggplot(aes(x = key, y = value)) +
+  geom_boxplot(aes(fill = target)) +
+  facet_wrap(~ key, scales = 'free', ncol = 3) +
+  scale_fill_manual(values=c("#499ac6de", "#bf6334f2")) +
+  theme_minimal()
+```
+
+
+In the correlation matrix below we see `nox`,`age`,`rad`,`tax` and `indus` have positive coorelation and `dis` have negative coorelation. Rest other variables have weaker coorelation.
+
+```{r}
+kable(sort(cor(dplyr::select(crime_training, target, everything()))[,1], decreasing = T), col.names = c("Correlation")) %>% 
+  kable_styling(full_width = F)
+
+corrplot.mixed(cor(dplyr::select(crime_training, -chas)), 
+               number.cex = .9, 
+               upper = "number", 
+               lower = "shade", 
+               lower.col = brewer.pal(n = 12, name = "Paired"),
+               upper.col = brewer.pal(n = 12, name = "Paired"))
+```
+
+# Data preparation
+
+In our above analysis we see that the data needs some transformations. Due presence of skewness and outliers we will transform these variables. We remove the tax variable due to multicollinearity and then  we take log transformations for age and lstat due to the presence of skweness. For rad, nox and zn will add quadratic term due to the presence of variances.
+
+```{r}
+#remove the tax varibale, add log tranform to age and add quadratic to zn,rad and nox
+
+crime_train_trans <- crime_training %>%
+  dplyr::select(-tax) %>% 
+  mutate(age = log(age),
+         lstat = log(lstat),
+         zn = zn^2,
+         rad = rad^2,
+         nox = I(nox^2))
+```
+
+
+# Building Models
+
+## Model 1
+
+
+In this model we use all the 12 variables after excluding the `tax` and run the glm. Many of the predictors have significant p-value(<=0.05)
+rm and lstat have large p-values.
+
+```{r}
+model1 <- glm(target ~ ., family = "binomial", crime_training)
+summary(model1)
+```
+## Model 2
+
+To further improve our model in the second model we use the transformed variables and run the glm. We see the p-values increases when used the transformed variables which makes is less efficient then the earlier model.
+
+```{r}
+model2 <- glm(target ~ ., family = "binomial", crime_train_trans)
+summary(model2)
+
+```
+## Model 3
+
+In our third model we use stepAIC from MASS package to get the significant features for this model. 
+We see improvement after using stepAIC function with significant p-va;ues for all the predictors.
+
+
+```{r}
+model3 <- stepAIC(model1, direction = "both", trace = FALSE)
+summary(model3)
+```
+# Choosing the model
+
+We create a table of values for all the 3 models we built above. From the below AUC curve we see Model 1 and Model 3 have almost similar values and Model 2 have lower AUC so we compare between model 1 & 3. When we further analyze the table values for Model 1 and 3 we see that Model 3 has lower AIC value which is preferable and also no of predictors are less in Model 3 than model 1 with other values being almost similar between these 2 models.
+So we choose Model 3 as our best model
+
+
+```{r}
+plot(roc(crime_training$target,  predict(model1, crime_training, interval = "prediction")), print.auc = TRUE)
+plot(roc(crime_training$target,  predict(model2, crime_training, interval = "prediction")), print.auc = TRUE)
+plot(roc(crime_training$target,  predict(model3, crime_training, interval = "prediction")), print.auc = TRUE)
+```
+
+
+```{r}
+c1 <- confusionMatrix(as.factor(as.integer(fitted(model1) > .5)), as.factor(model1$y), positive = "1")
+c2 <- confusionMatrix(as.factor(as.integer(fitted(model2) > .5)), as.factor(model2$y), positive = "1")
+c3 <- confusionMatrix(as.factor(as.integer(fitted(model3) > .5)), as.factor(model3$y), positive = "1")
+
+roc1 <- roc(crime_training$target,  predict(model1, crime_training, interval = "prediction"))
+roc2 <- roc(crime_training$target,  predict(model2, crime_training, interval = "prediction"))
+roc3 <- roc(crime_training$target,  predict(model3, crime_training, interval = "prediction"))
+
+
+metrics1 <- c(c1$overall[1], "Class. Error Rate" = 1 - as.numeric(c1$overall[1]), c1$byClass[c(1, 2, 5, 7)],  AIC=model1$aic, Predictors= length(coefficients(model1)))
+metrics2 <- c(c2$overall[1], "Class. Error Rate" = 1 - as.numeric(c2$overall[1]), c2$byClass[c(1, 2, 5, 7)],  AIC=model2$aic, Predictors= length(coefficients(model2)))
+metrics3 <- c(c3$overall[1], "Class. Error Rate" = 1 - as.numeric(c3$overall[1]), c3$byClass[c(1, 2, 5, 7)],  AIC=model3$aic, Predictors= length(coefficients(model3)))
+
+kable(cbind(metrics1, metrics2, metrics3), col.names = c("Model 1", "Model 2", "Model 3"))  %>% 
+  kable_styling(full_width = T)
+```
+
+
+
