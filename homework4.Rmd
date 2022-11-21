@@ -1,0 +1,345 @@
+---
+title: "DATA 621 - Homework 4"
+author: "Peter"
+output: 
+  html_document:
+    theme: cerulean
+    highlight: pygments
+    css: ./lab.css
+    toc: true
+    toc_float: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(warning = F, 
+                      message = F,
+                      echo = F,
+                      fig.align = "center")
+```
+
+
+# Overview
+
+In this homework assignment, you will explore, analyze and model a data set containing approximately 8000
+records representing a customer at an auto insurance company. Each record has two response variables. The
+first response variable, TARGET_FLAG, is a 1 or a 0. A “1” means that the person was in a car crash. A zero
+means that the person was not in a car crash. The second response variable is TARGET_AMT. This value is zero
+if the person did not crash their car. But if they did crash their car, this number will be a value greater than zero.
+
+Your objective is to build multiple linear regression and binary logistic regression models on the training data
+to predict the probability that a person will crash their car and also the amount of money it will cost if the person
+does crash their car. You can only use the variables given to you (or variables that you derive from the variables
+provided). Below is a short description of the variables of interest in the data set:
+
+<img src="https://raw.githubusercontent.com/petferns/DATA621/main/data621-hw4.JPG" />
+
+# Deliverables
+
+ A write-up submitted in PDF format. Your write-up should have four sections. Each one is described
+below. You may assume you are addressing me as a fellow data scientist, so do not need to shy away
+from technical details.
+
+ Assigned predictions (probabilities, classifications, cost) for the evaluation data set. Use 0.5 threshold.
+
+ Include your R statistical programming code in an Appendix.
+
+
+```{r load-libraries, echo=FALSE, message=FALSE, warning=FALSE, include=FALSE, paged.print=FALSE}
+library(MASS)
+library(scales)
+library(rpart.plot)
+library(ggplot2)
+library(ggfortify)
+library(gridExtra)
+library(forecast)
+library(fpp2)
+library(fma)
+library(kableExtra)
+library(e1071)
+library(mlbench)
+library(ggcorrplot)
+library(DataExplorer)
+library(timeDate)
+library(caret)
+library(GGally)
+library(corrplot)
+library(RColorBrewer)
+library(tibble)
+library(tidyr)
+library(tidyverse)
+library(tidyselect)
+library(dplyr)
+library(reshape2)
+library(mixtools)
+library(tidymodels)
+library(ggpmisc)
+library(regclass)
+library(pROC)
+library(skimr)
+library(naniar)
+library(RANN)
+library(kableExtra)
+library(geoR)
+```
+
+# Data exploration
+
+Training and testing datasets have been uploaded to my github account and loaded here using the `read.csv` function.
+Our training dataset has 8161 observations & 26 variables whereas testing dataset has 2141 observations and 26 variables. Each observation represent a customer at an auto insurance company. Each record has two response variables. The first response variable, TARGET_FLAG, is a 1 or a 0. A “1” means that the person was in a car crash. A zero means that the person was not in a car crash. The second response variable is TARGET_AMT. This value is zero if the person did not crash their car. But if they did crash their car, this number will be a value greater than zero.
+
+
+```{r load-data, echo=FALSE}
+# Load training and evaluation datasets
+
+df_train <- read.csv('https://raw.githubusercontent.com/petferns/DATA621/main/insurance_training_data.csv')
+df_eval <- read.csv('https://raw.githubusercontent.com/petferns/DATA621/main/insurance-evaluation-data.csv')
+```
+
+
+
+
+```{r, echo=FALSE}
+dim(df_train)
+```
+
+```{r, echo=FALSE}
+dim(df_eval)
+```
+
+```{r}
+
+summary(df_train)
+```
+```{r}
+#remove "$"
+money = function(input) {
+  out = sub("\\$", "", input)
+  out = as.numeric(sub(",", "", out))
+  return(out)
+}
+
+# Remove " ", replace with "_"
+underscore = function(input) {
+  out = sub(" ", "_", input)
+  return(out)
+}
+
+df_train <- df_train %>% 
+
+            mutate_at(c("INCOME","HOME_VAL","BLUEBOOK","OLDCLAIM"),
+                      money) %>% 
+            mutate_at(c("EDUCATION","JOB","CAR_TYPE","URBANICITY"),
+                      underscore) %>% 
+            mutate_at(c("EDUCATION","JOB","CAR_TYPE","URBANICITY"),
+                      as.factor) %>% 
+            mutate(TARGET_FLAG = as.factor(TARGET_FLAG))
+
+df_train$INDEX <- NULL
+```
+
+# Data Visualization
+
+We see 0.9% of missing data in the dataset further in the table below we see `AGE` has 6 missing data, 454 missing data in `YOJ`, 464 in `HOME_VAL` 510 in `CAR_AGE`
+
+```{r warning=FALSE}
+
+vis_miss(df_train)
+
+```
+
+```{r}
+sapply(df_train, function(x) sum(is.na(x))) %>% kable() %>% kable_styling()
+```
+
+From the histograms below we see the prevalence of kurtosis, specifically right skew in variables - `BLUEBOOK`,`INCOME` `MVR_PTS`,`OLDCLAIM,``TARGET_AMT`, `TRAVTIME` and  we see almost normal distributions in `AGE`, `CAR_AGE` and `YOJ`. We would need transformations of the variables and we will be doing this in the next section of data preparation.
+
+
+```{r, fig.height = 10, fig.width = 10, echo=FALSE, warning=FALSE}
+DataExplorer::plot_histogram(
+  geom_histogram_args = list(alpha = 0.5),
+   data = df_train,
+         ggtheme=theme_bw())
+```
+
+From the scatter plots below which is plotted by each variable wise against the target variable `TARGET_AMT`, we see  notable trends in the scatterplots below such as our response variable `TARGET_AMT` is likely to be lower when individuals have more kids at home as indicated by the `HOMEKIDS` feature, and when they have more teenagers driving the car indicated by the feature `KIDSDRIV`.
+
+There aren’t any significant amount of correlated features as we see from the correlation plot.
+
+```{r, fig.height = 10, fig.width = 10, echo=FALSE, warning=FALSE}
+DataExplorer::plot_scatterplot(
+    data = dplyr::select_if(df_train,is.numeric),
+    by = "TARGET_AMT",
+         ggtheme=theme_bw(),
+    theme_config = list(axis.text.x = element_text(angle = 90)))
+DataExplorer::plot_correlation(data = df_train,type = "all",cor_args = list("use" = "pairwise.complete.obs"))
+```
+
+
+
+# Data preparation
+
+As we saw in our earlier analysis we saw missing data in age, yoj, home_val, car_age and income. We replace the missing values with their respective means.
+
+
+```{r}
+df_train$AGE[is.na(df_train$AGE)] <- mean(df_train$AGE, na.rm=TRUE)
+df_train$YOJ[is.na(df_train$YOJ)] <- mean(df_train$YOJ, na.rm=TRUE)
+df_train$HOME_VAL[is.na(df_train$HOME_VAL)] <- mean(df_train$HOME_VAL, na.rm=TRUE)
+df_train$CAR_AGE[is.na(df_train$CAR_AGE)] <- mean(df_train$CAR_AGE, na.rm=TRUE)
+df_train$INCOME[is.na(df_train$INCOME)] <- mean(df_train$INCOME, na.rm=TRUE)
+df_train <- df_train[complete.cases(df_train),]
+```
+
+We see from the below that there aren't any missing values anymore.
+
+```{r}
+vis_miss(df_train)
+```
+We create a clean df `df_clean` by removing the INDEX column. We also replace the yes/ no with 1/ 0.
+
+
+```{r}
+df_clean <- df_train
+df_clean$INDEX <- NULL
+
+#Replace Yes/ no with 1/0
+df_clean$PARENT1 <- ifelse(df_clean$PARENT1=="Yes", 1, 0)
+df_clean$MSTATUS <- ifelse(df_clean$MSTATUS=="Yes", 1, 0)
+df_clean$SEX <- ifelse(df_clean$SEX=="M", 1, 0)
+df_clean$RED_CAR <- ifelse(df_clean$RED_CAR=="Yes", 1, 0)
+df_clean$REVOKED <- ifelse(df_clean$REVOKED=="Yes", 1, 0)
+
+df_clean$URBANICITY <- ifelse(df_clean$URBANICITY == "Highly Urban/ Urban", 1, 0)
+df_clean$CAR_USE <- ifelse(df_clean$CAR_USE=="Commercial", 1, 0)
+
+
+#Based on EDUCATION segregate the column values
+df_clean$HSDropout <- ifelse(df_clean$EDUCATION=="<High School", 1, 0)
+df_clean$Bachelors <- ifelse(df_clean$EDUCATION=="Bachelors", 1, 0)
+df_clean$Masters <- ifelse(df_clean$EDUCATION=="Masters", 1, 0)
+df_clean$PhD <- ifelse(df_clean$EDUCATION=="PhD", 1, 0)
+
+#Based on CAR_TYPE segregate the types
+df_clean$Panel_Truck <- ifelse(df_clean$CAR_TYPE=="Panel Truck", 1, 0)
+df_clean$Pickup <- ifelse(df_clean$CAR_TYPE=="Pickup", 1, 0)
+df_clean$Sports_Car <- ifelse(df_clean$CAR_TYPE=="Sports Car", 1, 0)
+df_clean$Van <- ifelse(df_clean$CAR_TYPE=="Van", 1, 0)
+df_clean$SUV <- ifelse(df_clean$CAR_TYPE=="z_SUV", 1, 0)
+
+#Based on JOB segregate the column values
+df_clean$Professional <- ifelse(df_clean$JOB == "Professional", 1, 0)
+df_clean$Blue_Collar <- ifelse(df_clean$JOB == "Professional", 1, 0)
+df_clean$Clerical <- ifelse(df_clean$JOB == "Clerical", 1, 0)
+df_clean$Doctor <- ifelse(df_clean$JOB == "Doctor", 1, 0)
+df_clean$Lawyer <- ifelse(df_clean$JOB == "Lawyer", 1, 0)
+df_clean$Manager <- ifelse(df_clean$JOB == "Manager", 1, 0)
+df_clean$Home_Maker <- ifelse(df_clean$JOB == "Home Maker", 1, 0)
+df_clean$Student <- ifelse(df_clean$JOB == "Student", 1, 0)
+
+#Cast to numeric
+df_clean$INCOME <- as.numeric(df_clean$INCOME)
+df_clean$HOME_VAL <- as.numeric(df_clean$HOME_VAL)
+df_clean$BLUEBOOK <- as.numeric(df_clean$BLUEBOOK)
+df_clean$OLDCLAIM <- as.numeric(df_clean$OLDCLAIM)
+```
+
+```{r}
+df_numeric<-select_if(df_clean, is.numeric)
+
+df_numeric <- as.data.frame((df_numeric))
+
+par(mfrow=c(3, 3))
+colnames <- dimnames(df_numeric)[[2]]
+
+  for(col in 2:ncol(df_train)) {
+
+    d <- density(na.omit(df_numeric[,col]))
+    plot(d, type="n", main=colnames[col])
+    polygon(d, col="blue", border="gray")
+  }
+```
+
+As we saw in our earlier analysis certain varaibles requires transformations due to the presence of skewing.
+
+```{r}
+
+boxcoxfit(df_clean$INCOME[df_clean$INCOME >0])
+boxcoxfit(df_clean$HOME_VAL[df_clean$HOME_VAL > 0])
+boxcoxfit(df_clean$BLUEBOOK)
+boxcoxfit(df_clean$OLDCLAIM[df_clean$OLDCLAIM>0])
+```
+`INCOME_TRANSFORMED`, `HOME_VAL_TRANSFORMED`, `BLUEBOOK_MOD_TRANSFORMED`, `OLD_CLAIM_TRANSFORMED` are the tranformed variables.
+
+```{r}
+df_clean$INCOME_TRANSFORMED <- df_clean$INCOME ^0.443
+
+df_clean$HOME_VAL_TRANSFORMED <- df_clean$HOME_VAL^0.102
+
+df_clean$BLUEBOOK_MOD_TRANSFORMED <- df_clean$BLUEBOOK^0.461
+
+df_clean$OLD_CLAIM_TRANSFORMED <- log(df_clean$OLDCLAIM + 1)
+
+
+df_transformed <- df_clean
+```
+
+# Building Models
+
+
+
+## Model 1
+
+We build our first model `Model1` by including all the variables and run the model. Many variables have significant p-value and JOBClerical has the largest p-value.
+
+```{r}
+
+model1 <- glm(TARGET_FLAG ~.-INCOME_TRANSFORMED-HOME_VAL_TRANSFORMED-BLUEBOOK_MOD_TRANSFORMED-OLD_CLAIM_TRANSFORMED, data = df_clean[,-c(2)], family = binomial(link='logit'))
+summary(model1)
+```
+
+## Model 2
+
+In our model 2 we include the original variables as well as the transformed variables. We see that even though some of the p-values are reduced.
+
+```{r}
+
+model2 <- glm(TARGET_FLAG ~., data = df_clean[,-c(2)], family = binomial(link='logit'))
+summary(model2)
+```
+
+## Model 3
+
+In this model we tried including the variables with significant p-values.
+
+```{r}
+
+model3 <- glm(TARGET_FLAG ~.-AGE-HOMEKIDS-YOJ-INCOME-PARENT1-HOME_VAL-MSTATUS-SEX-RED_CAR-CLM_FREQ-CAR_AGE-HSDropout-Professional-Blue_Collar-Clerical-Lawyer-Home_Maker-HOME_VAL_TRANSFORMED-Student-Doctor-CAR_USE-REVOKED-URBANICITY-Bachelors-Masters-PhD-Panel_Truck-Pickup-Sports_Car-Van-SUV-Manager, data = df_clean[,-c(2)], family = binomial(link='logit'))
+summary(model3)
+```
+
+# Choosing the model
+
+We see from the below summary table that `Model1` and `Model2` have similar accuracy of around 77%. Model 2 has higher AUC and lower AIC which is preferable. We choose `Model 2` as our best model among the 3.
+
+```{r warning=FALSE, error=FALSE}
+c1 <- confusionMatrix(as.factor(as.integer(fitted(model1) > .5)), as.factor(model1$y), positive = "1")
+c2 <- confusionMatrix(as.factor(as.integer(fitted(model2) > .5)), as.factor(model2$y), positive = "1")
+c3 <- confusionMatrix(as.factor(as.integer(fitted(model3) > .5)), as.factor(model3$y), positive = "1")
+
+roc1 <- roc(df_clean$TARGET_FLAG,  predict(model1, df_clean, interval = "prediction"))
+roc2 <- roc(df_clean$TARGET_FLAG,  predict(model2, df_clean, interval = "prediction"))
+roc3 <- roc(df_clean$TARGET_FLAG,  predict(model3, df_clean, interval = "prediction"))
+
+
+metrics1 <- c(c1$overall[1], "Class. Error Rate" = 1 - as.numeric(c1$overall[1]), c1$byClass[c(1, 2, 5, 7)], AUC = roc1$auc, AIC=model1$aic, Predictors= length(coefficients(model1)))
+metrics2 <- c(c2$overall[1], "Class. Error Rate" = 1 - as.numeric(c2$overall[1]), c2$byClass[c(1, 2, 5, 7)], AUC = roc2$auc, AIC=model2$aic, Predictors= length(coefficients(model2)))
+metrics3 <- c(c3$overall[1], "Class. Error Rate" = 1 - as.numeric(c3$overall[1]), c3$byClass[c(1, 2, 5, 7)], AUC = roc3$auc, AIC=model3$aic, Predictors= length(coefficients(model3)))
+
+kable(cbind(metrics1, metrics2, metrics3), col.names = c("Model 1", "Model 2", "Model 3"))  %>% 
+  kable_styling(full_width = T)
+```
+```{r warning=FALSE, error=FALSE}
+plot(roc(df_clean$TARGET_FLAG,  predict(model1, df_clean, interval = "prediction")), print.auc = TRUE)
+plot(roc(df_clean$TARGET_FLAG,  predict(model2, df_clean, interval = "prediction")), print.auc = TRUE)
+plot(roc(df_clean$TARGET_FLAG,  predict(model3, df_clean, interval = "prediction")), print.auc = TRUE)
+```
