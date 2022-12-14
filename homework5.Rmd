@@ -1,0 +1,250 @@
+---
+title: "DATA 621 - Homework 5"
+author: "Peter"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(warning = F, 
+                      message = F,
+                      echo = F,
+                      fig.align = "center")
+```
+
+
+### Overview
+
+In this homework assignment, you will explore, analyze and model a data set containing information on
+approximately 12,000 commercially available wines. The variables are mostly related to the chemical properties of
+the wine being sold. The response variable is the number of sample cases of wine that were purchased by wine
+distribution companies after sampling a wine. These cases would be used to provide tasting samples to
+restaurants and wine stores around the United States. The more sample cases purchased, the more likely is a
+wine to be sold at a high end restaurant. A large wine manufacturer is studying the data in order to predict the
+number of wine cases ordered based upon the wine characteristics. If the wine manufacturer can predict the
+number of cases, then that manufacturer will be able to adjust their wine offering to maximize sales.
+
+Your objective is to build a count regression model to predict the number of cases of wine that will be sold
+given certain properties of the wine. HINT: Sometimes, the fact that a variable is missing is actually predictive of
+the target. You can only use the variables given to you (or variables that you derive from the variables provided).
+Below is a short description of the variables of interest in the data set:
+
+<img src="https://raw.githubusercontent.com/petferns/DATA621/main/hw5%20dataset.JPG" />
+
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, include=FALSE, paged.print=FALSE}
+library(dplyr)
+library(MASS)
+library(rpart.plot)
+library(ggplot2)
+library(ggfortify)
+library(gridExtra)
+library(forecast)
+library(fpp2)
+library(fma)
+library(kableExtra)
+library(e1071)
+library(mlbench)
+library(ggcorrplot)
+library(DataExplorer)
+library(timeDate)
+library(caret)
+library(GGally)
+library(corrplot)
+library(RColorBrewer)
+library(tibble)
+library(tidyr)
+library(tidyverse)
+library(reshape2)
+library(mixtools)
+library(tidymodels)
+library(ggpmisc)
+library(regclass)
+library(skimr)
+library(mlr)
+```
+
+# Data exploration
+
+I uploaded the csv files on my github account and loaded here. First column `INDEX` in training set and `IN` in evaluation set doesn't have any significance in our analysis so the columns will be dropped.
+
+
+```{r load_data, echo=FALSE}
+df_train <- read.csv('https://raw.githubusercontent.com/petferns/DATA621/main/wine-training-data.csv')
+df_eval <- read.csv('https://raw.githubusercontent.com/petferns/DATA621/main/wine-evaluation-data.csv')
+```
+
+
+The training dataset has `12795` observations and `16` variables. We see from the summary there are missing values in many variables. We will clean up accordingly in the later sections.
+
+
+```{r}
+dim(df_train)
+```
+
+
+```{r echo=FALSE}
+# Display summary statistics
+summary(df_train)
+```
+The first column from both of the datasets will be dropped as they are just index numbers and doesn't help in our analysis.
+
+```{r}
+df_train <- df_train %>% 
+  dplyr::select(-1)
+
+df_eval <- df_eval %>% 
+  dplyr::select(-1)
+```
+
+
+# Data Visualization
+
+We see from the histogram plots we see many of the variables have normal distribution,there is right skewing in `AcidIndex` and `STARS`
+
+
+```{r, fig.height = 10, fig.width = 10, echo=FALSE}
+
+gather_df <- df_train %>% 
+  gather(key = 'variable', value = 'value')
+
+# Histogram plots of each variable
+ggplot(gather_df) + 
+  geom_histogram(aes(x=value, y = ..density..), bins=30) + 
+  geom_density(aes(x=value), color='blue') +
+  facet_wrap(. ~variable, scales='free', ncol=4)
+```
+
+From the variable plots below plotted against target varaible, we see -  the values of  `STARS` and `LabelAppeal` increases with target variable, so they have a positive relationship with target variable.
+
+
+```{r, fig.height = 10, fig.width = 10, echo=FALSE}
+# Plot scatter plots of each variable versus the target variable
+featurePlot(df_train[,2:ncol(df_train)], df_train[,1], pch = 20)
+```
+
+From the correlation matrix below - `STARS` and `LabelAppeal` have positive reltionship and other variables are loosely correlated, there doesn't seem to be any relationships.
+
+
+```{r}
+DataExplorer::plot_correlation(data = df_train,type = "all",cor_args = list("use" = "pairwise.complete.obs"))
+```
+
+
+# Data preparation
+
+In our earlier analysis we saw there are variables with missing values. So firstly for `STARS`  we plan to replace NA it with 0.
+For  the remaining missing data we will be using caret::preProcess and method=knnImpute. With preProcess it will also center, scale and BoxCox our features at the same time. `df_clean` is the cleaned dataframe.
+
+
+```{r}
+#Exclude target variable from being transformed.
+
+df_temp <- df_train %>% dplyr::select(-TARGET)
+
+```
+
+```{r}
+tempCol <- df_train$TARGET
+```
+
+
+```{r}
+df_temp$STARS <- df_temp$STARS %>%
+    replace_na(0)
+```
+
+```{r}
+imputation <- preProcess(df_temp, method = c("knnImpute", 'BoxCox'))
+```
+
+```{r}
+training_x_imp <- predict(imputation, df_temp)
+```
+
+```{r}
+df_clean <- cbind(tempCol, training_x_imp) %>% 
+  as.data.frame() %>%
+  rename(TARGET = tempCol)
+```
+
+
+# Model Building
+
+We now start building the models
+
+Split the dataset `df_clean` into 80% as training and 20% as testing datasets.
+
+```{r}
+set.seed(3)
+df_split <- initial_split(df_clean, prop = 0.8)
+training_df <- training(df_split)
+testing_df <- testing(df_split)
+```
+
+
+## Model 1
+
+In the first model we use generalized linear model glm with poisson family and include all the features.
+
+```{r}
+model1 <- glm(TARGET ~ FixedAcidity + VolatileAcidity + CitricAcid + ResidualSugar + 
+                Chlorides + FreeSulfurDioxide + TotalSulfurDioxide + Density +
+                pH + Sulphates + Alcohol + 
+                as.factor(LabelAppeal) +
+                as.factor(AcidIndex) +
+                as.factor(STARS),
+              data =training_df, family=poisson)
+
+summary(model1)
+```
+## Model 2
+
+For Model 2 we use significant features from Model 1 using the stepAIC
+
+```{r}
+
+model2 <- stepAIC(model1, direction = "both", family=poisson)
+summary(model2)
+```
+## Model 3
+
+We will build another model, model 3 we choose negative binomial model this time with all the predictors
+
+```{r error=F, warning=F, echo=F}
+model3 <- glm.nb(TARGET~ VolatileAcidity + FreeSulfurDioxide + TotalSulfurDioxide + Alcohol +
+                as.factor(LabelAppeal) +
+                as.factor(AcidIndex) + 
+                as.factor(STARS),
+              data=training_df)
+summary(model3)
+```
+
+## Model 4
+
+We use the significant predictors using stepAIC and run again the negative binomial model.
+
+```{r}
+model4 <- stepAIC(model3, direction = "forward")
+summary(model4)
+```
+
+# Model selection
+
+Among the 4 model Poisson 2 fairs well among the others, it has lowest AIC and almost similar MSE as Poisson 1 which is in lower range. Due to lower AIC and lower MSE we choose Poisson Model 2 as our best Model.
+
+```{r}
+
+metrics1 <- c("MSE" = mean((training_df$TARGET - predict(model1))^2), Predictors= length(coefficients(model1)), AIC=model1$aic)
+
+metrics2 <- c("MSE" = mean((training_df$TARGET - predict(model2))^2),   Predictors= length(coefficients(model2)), AIC=model2$aic)
+
+metrics3 <- c("MSE" = mean((training_df$TARGET - predict(model3))^2),   Predictors= length(coefficients(model3)), AIC=model3$aic)
+
+metrics4 <- c("MSE" = mean((training_df$TARGET - predict(model4))^2),   Predictors= length(coefficients(model4)), AIC=model4$aic)
+
+kable(cbind(metrics1, metrics2, metrics3, metrics4), col.names = c("Poisson1", "Poisson2","Neg binomial1","Neg binomial2"))  %>% 
+  kable_styling(full_width = T)
+```
+
